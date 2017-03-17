@@ -18,13 +18,13 @@ class BaseSmoothOracle(object):
         Computes the gradient at point x.
         """
         raise NotImplementedError('Grad oracle is not implemented.')
-    
+
     def hess(self, x):
         """
         Computes the Hessian matrix at point x.
         """
         raise NotImplementedError('Hessian oracle is not implemented.')
-    
+
     def func_directional(self, x, d, alpha):
         """
         Computes phi(alpha) = f(x + alpha*d).
@@ -57,7 +57,7 @@ class QuadraticOracle(BaseSmoothOracle):
         return self.A.dot(x) - self.b
 
     def hess(self, x):
-        return self.A 
+        return self.A
 
 
 class LogRegL2Oracle(BaseSmoothOracle):
@@ -86,16 +86,17 @@ class LogRegL2Oracle(BaseSmoothOracle):
         self.regcoef = regcoef
 
     def func(self, x):
-        # TODO: Implement
-        return None
+        logreg = scipy.linalg.norm(np.logaddexp(0.0, -self.b * self.matvec_Ax(x)), 1)
+        return self.b.size**-1 * logreg + self.regcoef / 2.0 * scipy.linalg.norm(x)**2
 
     def grad(self, x):
-        # TODO: Implement
-        return None
+        logreg = self.matvec_ATx(self.b * scipy.special.expit(-self.b * self.matvec_Ax(x)))
+        return -self.b.size**-1 * logreg + self.regcoef * x
 
     def hess(self, x):
-        # TODO: Implement
-        return None
+        sigma = scipy.special.expit(-self.b * self.matvec_Ax(x))
+        logreg = self.matmat_ATsA(sigma * (1.0 - sigma))
+        return self.b.size**-1 * logreg + self.regcoef * np.identity(x.size)
 
 
 class LogRegL2OptimizedOracle(LogRegL2Oracle):
@@ -108,13 +109,88 @@ class LogRegL2OptimizedOracle(LogRegL2Oracle):
     def __init__(self, matvec_Ax, matvec_ATx, matmat_ATsA, b, regcoef):
         super().__init__(matvec_Ax, matvec_ATx, matmat_ATsA, b, regcoef)
 
+        self.last_x = None
+        self.last_x_directional = None
+        self.last_d_directional = None
+        self.last_xalphad_directional = None
+        self.last_Ax = None
+        self.last_Ax_directional = None
+        self.last_Ad_directional = None
+        self.last_Axalphad_directional = None
+
+
+    def calculated(self):
+        return [
+            (self.last_x, self.last_Ax),
+            (self.last_x_directional, self.last_Ax_directional),
+            (self.last_d_directional, self.last_Ad_directional),
+            (self.last_xalphad_directional, self.last_Axalphad_directional),
+        ]
+
+    def update_x(self, x):
+        for last_x, last_Ax in self.calculated():
+            if np.array_equal(last_x, x):
+                self.last_x, self.last_Ax = np.copy(last_x), np.copy(last_Ax)
+                return
+        self.last_x, self.last_Ax = np.copy(x), self.matvec_Ax(x)
+
+    def update_x_directional(self, x):
+        for last_x, last_Ax in self.calculated():
+            if np.array_equal(last_x, x):
+                self.last_x_directional, self.last_Ax_directional = np.copy(last_x), np.copy(last_Ax)
+                return
+        self.last_x_directional, self.last_Ax_directional = np.copy(x), self.matvec_Ax(x)
+
+    def update_d_directional(self, x):
+        for last_x, last_Ax in self.calculated():
+            if np.array_equal(last_x, x):
+                self.last_d_directional, self.last_Ad_directional = np.copy(last_x), np.copy(last_Ax)
+                return
+        self.last_d_directional, self.last_Ad_directional = np.copy(x), self.matvec_Ax(x)
+
+    def update_xalphad_directional(self, x, d, alpha):
+        x_trial = x + alpha * d
+
+        for last_x, last_Ax in self.calculated():
+            if np.array_equal(last_x, x_trial):
+                self.last_xalphad_directional, self.last_Axalphad_directional = np.copy(last_x), np.copy(last_Ax)
+                return
+
+        self.update_x_directional(x)
+        self.update_d_directional(d)
+
+        self.last_xalphad_directional = x_trial
+        self.last_Axalphad_directional = self.last_Ax_directional + alpha * self.last_Ad_directional
+
+
+    def func(self, x):
+        self.update_x(x)
+        logreg = scipy.linalg.norm(np.logaddexp(0.0, -self.b * self.last_Ax), 1)
+        return self.b.size**-1 * logreg + self.regcoef / 2.0 * scipy.linalg.norm(x)**2
+
+    def grad(self, x):
+        self.update_x(x)
+        logreg = self.matvec_ATx(self.b * scipy.special.expit(-self.b * self.last_Ax))
+        return -self.b.size**-1 * logreg + self.regcoef * x
+
+    def hess(self, x):
+        self.update_x(x)
+        sigma = scipy.special.expit(-self.b * self.last_Ax)
+        logreg = self.matmat_ATsA(sigma * (1.0 - sigma))
+        return self.b.size**-1 * logreg + self.regcoef * np.identity(x.size)
+
     def func_directional(self, x, d, alpha):
-        # TODO: Implement optimized version with pre-computation of Ax and Ad
-        return None
+        self.update_xalphad_directional(x, d, alpha)
+        logreg = scipy.linalg.norm(np.logaddexp(0.0, -self.b * self.last_Axalphad_directional), 1)
+        func = self.b.size**-1 * logreg + self.regcoef / 2.0 * scipy.linalg.norm((self.last_xalphad_directional))**2
+        return np.squeeze(func)
 
     def grad_directional(self, x, d, alpha):
-        # TODO: Implement optimized version with pre-computation of Ax and Ad
-        return None
+        self.update_d_directional(d)
+        self.update_xalphad_directional(x, d, alpha)
+        logreg = np.dot(self.b * scipy.special.expit(-self.b * self.last_Axalphad_directional), self.last_Ad_directional)
+        grad = -self.b.size**-1 * logreg + self.regcoef * np.dot(self.last_xalphad_directional, self.last_d_directional)
+        return np.squeeze(grad)
 
 
 def create_log_reg_oracle(A, b, regcoef, oracle_type='usual'):
@@ -122,12 +198,14 @@ def create_log_reg_oracle(A, b, regcoef, oracle_type='usual'):
     Auxiliary function for creating logistic regression oracles.
         `oracle_type` must be either 'usual' or 'optimized'
     """
-    matvec_Ax = lambda x: x  # TODO: Implement
-    matvec_ATx = lambda x: x  # TODO: Implement
+
+    matvec_Ax = lambda x: A.dot(x)
+    matvec_ATx = lambda x: A.T.dot(x)
 
     def matmat_ATsA(s):
-        # TODO: Implement
-        return None
+        if isinstance(A, scipy.sparse.spmatrix):
+            return A.T.dot(scipy.sparse.diags(s)).dot(A)
+        return np.dot(A.T, s[:, np.newaxis] * A)
 
     if oracle_type == 'usual':
         oracle = LogRegL2Oracle
@@ -147,20 +225,28 @@ def grad_finite_diff(func, x, eps=1e-8):
         e_i = (0, 0, ..., 0, 1, 0, ..., 0)
                           >> i <<
     """
-    # TODO: Implement numerical estimation of the gradient
-    return None
+
+    row_func = lambda e_i: func(x + e_i)
+    return (np.apply_along_axis(row_func, 1, eps * np.identity(x.size)) - func(x)) / eps
 
 
 def hess_finite_diff(func, x, eps=1e-5):
     """
     Returns approximation of the Hessian using finite differences:
         result_{ij} := (f(x + eps * e_i + eps * e_j)
-                               - f(x + eps * e_i) 
+                               - f(x + eps * e_i)
                                - f(x + eps * e_j)
                                + f(x)) / eps^2,
         where e_i are coordinate vectors:
         e_i = (0, 0, ..., 0, 1, 0, ..., 0)
                           >> i <<
     """
-    # TODO: Implement numerical estimation of the Hessian
-    return None
+
+    row_func = lambda e_i: func(x + e_i)
+    elem_func = lambda e_i, e_j : func(x + e_i + e_j)
+    eps_e = eps * np.identity(x.size)
+
+    E_ij = np.array([[elem_func(eps_e[i], eps_e[j]) for j in range(x.size)] for i in range(x.size)])
+    E_i = np.apply_along_axis(row_func, 1, eps_e)
+
+    return (E_ij - E_i - E_i[:, np.newaxis] + func(x)) / np.square(eps)
