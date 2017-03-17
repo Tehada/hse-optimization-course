@@ -113,13 +113,13 @@ class LineSearchTool(object):
 
 
 def get_line_search_tool(line_search_options=None):
-      if line_search_options:
-         if type(line_search_options) is LineSearchTool:
-             return line_search_options
-         else:
-             return LineSearchTool.from_dict(line_search_options)
-      else:
-          return LineSearchTool()
+    if line_search_options:
+        if type(line_search_options) is LineSearchTool:
+            return line_search_options
+        else:
+            return LineSearchTool.from_dict(line_search_options)
+    else:
+        return LineSearchTool()
 
 
 def gradient_descent(oracle, x_0, tolerance=1e-5, max_iter=10000,
@@ -167,7 +167,7 @@ def gradient_descent(oracle, x_0, tolerance=1e-5, max_iter=10000,
     Example:
     --------
     >> oracle = QuadraticOracle(np.eye(5), np.arange(5))
-    >> x_opt, message, history = gradient_descent(oracle, np.zeros(5), line_search_options={'method': 'Armijo', 'c': 1e-4})
+    >> x_opt, message, history = gradient_descent(oracle, np.zeros(5), line_search_options={'method': 'Armijo', 'c1': 1e-4})
     >> print('Found optimal point: {}'.format(x_opt))
        Found optimal point: [ 0.  1.  2.  3.  4.]
     """
@@ -246,7 +246,7 @@ def newton(oracle, x_0, tolerance=1e-5, max_iter=100,
     -------
     x_star : np.array
         The point found by the optimization procedure
-    message : string`
+    message : string
         'success' or the description of error:
             - 'iterations_exceeded': if after max_iter iterations of the method x_k still doesn't satisfy
                 the stopping criterion.
