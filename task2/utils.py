@@ -1,4 +1,6 @@
 import numpy as np
+import scipy
+
 
 class LineSearchTool(object):
     """
@@ -71,9 +73,34 @@ class LineSearchTool(object):
         alpha : float or None if failure
             Chosen step size
         """
-        # TODO: Implement line search procedures for Armijo, Wolfe and Constant steps.
-        # TODO: BONUS: Also fallback into oracle.minimize_directional() if method == 'Best'
-        return None
+
+        if self._method == 'Best':
+            return oracle.minimize_directional(x_k, d_k)
+
+        if self._method == 'Constant':
+            return self.c
+
+        phi = lambda alpha: oracle.func_directional(x_k, d_k, alpha)
+        derphi = lambda alpha: oracle.grad_directional(x_k, d_k, alpha)
+        phi0 = phi(0.0)
+        derphi0 = derphi(0.0)
+
+        if self._method == 'Wolfe':
+            alpha_wolfe = scipy.optimize.linesearch.scalar_search_wolfe2(
+                phi, derphi, phi0=phi0, derphi0=derphi0, c1=self.c1, c2=self.c2
+            )
+            if alpha_wolfe[0] is not None:
+                return alpha_wolfe[0]
+
+        if previous_alpha is None:
+            alpha_k = np.copy(self.alpha_0)
+        else:
+            alpha_k = np.copy(previous_alpha)
+
+        while phi(alpha_k) > phi0 + self.c1 * alpha_k * derphi0:
+            alpha_k = np.divide(alpha_k, 2.0)
+
+        return alpha_k
 
 
 def get_line_search_tool(line_search_options=None):
