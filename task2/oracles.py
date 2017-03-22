@@ -72,7 +72,7 @@ class QuadraticOracle(BaseSmoothOracle):
             Finds alpha = argmin f(x + alpha d)
         """
 
-        return -np.dot(d, self.grad(x)) / np.dot(d, np.dot(self.A, d))
+        return -np.dot(d, self.grad(x)) / np.dot(d, self.A.dot(d))
 
 
 class LogRegL2Oracle(BaseSmoothOracle):
