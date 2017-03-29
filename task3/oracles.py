@@ -131,7 +131,7 @@ class LassoNonsmoothOracle(BaseNonsmoothConvexOracle):
     # TODO: implement.
 
 
-def lasso_duality_gap(ATAx_b, Ax_b, b, regcoef):
+def lasso_duality_gap(x, Ax_b, ATAx_b, b, regcoef):
     """
     Estimates f(x) - f* via duality gap for 
         f(x) := ||Ax - b||_2^2 + regcoef * ||x||_1.
@@ -150,15 +150,4 @@ def create_lasso_nonsmooth_oracle(A, b, regcoef):
     matvec_Ax = lambda x: A.dot(x)
     matvec_ATx = lambda x: A.T.dot(x)
     return LassoNonsmoothOracle(matvec_Ax, matvec_ATx, b, regcoef)
-
-
-
-
-
-
-
-
-
-
-
 
