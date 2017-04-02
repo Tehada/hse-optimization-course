@@ -54,19 +54,19 @@ class BaseCompositeOracle(object):
         """
         Computes the f(x) + h(x).
         """
-        return self.f.func(x) + self.h.func(x)
+        return self._f.func(x) + self._h.func(x)
 
     def grad(self, x):
         """
         Computes the gradient of f(x).
         """
-        return self.f.grad(x)
+        return self._f.grad(x)
 
     def prox(self, x, alpha):
         """
         Computes the proximal mapping.
         """
-        return self.h.prox(x, alpha)
+        return self._h.prox(x, alpha)
 
     def duality_gap(self, x):
         """
@@ -126,12 +126,12 @@ class LassoProxOracle(BaseCompositeOracle):
 class LassoNonsmoothOracle(BaseNonsmoothConvexOracle):
     """
     Oracle for nonsmooth convex function
-        0.5 * ||Ax - b||_2^2 + ||x||_1.
+        0.5 * ||Ax - b||_2^2 + regcoef * ||x||_1.
     """
     # TODO: implement.
 
 
-def lasso_duality_gap(ATAx_b, Ax_b, b, regcoef):
+def lasso_duality_gap(x, Ax_b, ATAx_b, b, regcoef):
     """
     Estimates f(x) - f* via duality gap for 
         f(x) := ||Ax - b||_2^2 + regcoef * ||x||_1.
@@ -150,15 +150,4 @@ def create_lasso_nonsmooth_oracle(A, b, regcoef):
     matvec_Ax = lambda x: A.dot(x)
     matvec_ATx = lambda x: A.T.dot(x)
     return LassoNonsmoothOracle(matvec_Ax, matvec_ATx, b, regcoef)
-
-
-
-
-
-
-
-
-
-
-
 
