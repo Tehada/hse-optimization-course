@@ -1,13 +1,22 @@
 from collections import defaultdict
 import numpy as np
 from numpy.linalg import norm, solve
-from time import time
-import datetime
+from datetime import datetime
 
 
-def barrier_method_lasso(A, b, reg_coef, x_0, u_0, tolerance=1e-5, 
-                         tolerance_inner=1e-8, max_iter=100, 
-                         max_iter_inner=20, t_0=1, gamma=10, 
+class Timer:
+    def __init__(self):
+        self.start = datetime.now()
+
+    def seconds(self):
+        now = datetime.now()
+        timedelta = now - self.start
+        return timedelta.seconds + timedelta.microseconds * 1e-6
+
+
+def barrier_method_lasso(A, b, reg_coef, x_0, u_0, tolerance=1e-5,
+                         tolerance_inner=1e-8, max_iter=100,
+                         max_iter_inner=20, t_0=1, gamma=10,
                          c1=1e-4, lasso_duality_gap=None,
                          trace=False, display=False):
     """
@@ -52,7 +61,7 @@ def barrier_method_lasso(A, b, reg_coef, x_0, u_0, tolerance=1e-5,
         If calable the signature is lasso_duality_gap(ATAx_b, Ax_b, b, regcoef)
         Returns duality gap value for esimating the progress of method.
     trace : bool
-        If True, the progress information is appended into history dictionary 
+        If True, the progress information is appended into history dictionary
         during training. Otherwise None is returned instead of history.
     display : bool
         If True, debug information is displayed during optimization.
@@ -75,7 +84,8 @@ def barrier_method_lasso(A, b, reg_coef, x_0, u_0, tolerance=1e-5,
             - history['duality_gap'] : list of duality gaps
             - history['x'] : list of np.arrays, containing the trajectory of the algorithm. ONLY STORE IF x.size <= 2
     """
-    # TODO: implement.
+
+    pass
 
 
 def subgradient_method(oracle, x_0, tolerance=1e-2, max_iter=1000, alpha_0=1,
@@ -120,7 +130,42 @@ def subgradient_method(oracle, x_0, tolerance=1e-2, max_iter=1000, alpha_0=1,
             - history['duality_gap'] : list of duality gaps
             - history['x'] : list of np.arrays, containing the trajectory of the algorithm. ONLY STORE IF x.size <= 2
     """
-    # TODO: implement.
+
+    history = defaultdict(list) if trace else None
+    x_k = np.copy(x_0).astype(np.float64)
+
+    timer = Timer()
+    converge = False
+
+    x_best, f_best = None, None
+
+    for num_iter in range(max_iter + 1):
+        f_k = oracle.func(x_k)
+        duality_gap = oracle.duality_gap(x_k)
+
+        if f_best is None or f_best > f_k:
+            x_best, f_best = x_k, f_k
+
+        if trace:
+            history['time'].append(timer.seconds())
+            history['func'].append(np.copy(f_k))
+            history['duality_gap'].append(np.copy(duality_gap))
+            if x_k.size <= 2:
+                history['x'].append(np.copy(x_k))
+
+        if display: print('step', history['time'][-1] if history else '')
+
+        if duality_gap <= tolerance:
+            converge = True
+            break
+
+        if num_iter == max_iter: break
+
+        alpha_k = alpha_0 / np.sqrt(num_iter + 1)
+        subgrad_k = oracle.subgrad(x_k)
+        x_k -= alpha_k * subgrad_k / scipy.linalg.norm(subgrad_k)
+
+    return x_best, 'success' if converge else 'iterations_exceeded', history
 
 
 def proximal_gradient_descent(oracle, x_0, L_0=1, tolerance=1e-5,
@@ -131,8 +176,8 @@ def proximal_gradient_descent(oracle, x_0, L_0=1, tolerance=1e-5,
     Parameters
     ----------
     oracle : BaseCompositeOracle-descendant object
-        Oracle with .func() and .grad() and .prox() methods implemented 
-        for computing function value, its gradient and proximal mapping 
+        Oracle with .func() and .grad() and .prox() methods implemented
+        for computing function value, its gradient and proximal mapping
         respectively.
         If avaliable, .duality_gap() method is used for estimating f_k - f*.
     x_0 : 1-dimensional np.array
@@ -166,5 +211,52 @@ def proximal_gradient_descent(oracle, x_0, L_0=1, tolerance=1e-5,
             - history['duality_gap'] : list of duality gaps
             - history['x'] : list of np.arrays, containing the trajectory of the algorithm. ONLY STORE IF x.size <= 2
     """
-    # TODO: implement.
 
+    history = defaultdict(list) if trace else None
+    x_k = np.copy(x_0).astype(np.float64)
+    f_k = oracle.func(x_k)
+
+    timer = Timer()
+    converge = False
+    L_k = L_0
+
+    for num_iter in range(max_iter + 1):
+        duality_gap = oracle.duality_gap(x_k)
+
+        if trace:
+            history['time'].append(timer.seconds())
+            history['func'].append(np.copy(f_k))
+            history['duality_gap'].append(np.copy(duality_gap))
+            if x_k.size <= 2:
+                history['x'].append(np.copy(x_k))
+
+        if display: print('step', history['time'][-1] if history else '')
+
+        if duality_gap <= tolerance:
+            converge = True
+            break
+
+        if num_iter == max_iter: break
+
+        _f_k = oracle._f.func(x_k)
+        grad_k = oracle.grad(x_k)
+
+        nesterov_converge = False
+        while not nesterov_converge:
+            def m(y, L):
+                return _f_k + np.dot(grad_k, y - x_k) + L / 2.0 * np.dot(y - x_k, y - x_k) + oracle._h.func(y)
+
+            alpha = 1.0 / L_k
+            y = oracle.prox(x_k - alpha * grad_k, alpha)
+            f_y = oracle.func(y)
+
+            if f_y <= m(y, L_k):
+                nesterov_converge = True
+            else:
+                L_k *= 2.0
+
+        x_k, f_k = y, f_y
+        L_k = max(L_0, L_k / 2.0)
+        break
+
+    return x_k, 'success' if converge else 'iterations_exceeded', history
