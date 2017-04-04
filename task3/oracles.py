@@ -1,18 +1,22 @@
 import numpy as np
-import scipy
-from scipy.special import expit
+import scipy.linalg
 
 
-class BaseSmoothOracle(object):
-    """
-    Base class for smooth function.
-    """
+# Class inheritance is insignificantly changed
 
+
+class BaseFuncOracle(object):
     def func(self, x):
         """
         Computes the value of function at point x.
         """
         raise NotImplementedError('Func is not implemented.')
+
+
+class BaseSmoothOracle(BaseFuncOracle):
+    """
+    Base class for smooth function.
+    """
 
     def grad(self, x):
         """
@@ -21,16 +25,15 @@ class BaseSmoothOracle(object):
         raise NotImplementedError('Grad is not implemented.')
 
 
-class BaseProxOracle(object):
+class BaseNonsmoothOracle(BaseFuncOracle):
+    def subgrad(self, x):
+        raise NotImplementedError('Subgrad is not implemented.')
+
+
+class BaseProxOracle(BaseNonsmoothOracle):
     """
     Base class for proximal h(x)-part in a composite function f(x) + h(x).
     """
-
-    def func(self, x):
-        """
-        Computes the value of h(x).
-        """
-        raise NotImplementedError('Func is not implemented.')
 
     def prox(self, x, alpha):
         """
@@ -40,7 +43,30 @@ class BaseProxOracle(object):
         raise NotImplementedError('Prox is not implemented.')
 
 
-class BaseCompositeOracle(object):
+class BaseNonsmoothConvexOracle(object):
+    """
+    Base class for implementation of oracle for nonsmooth convex function.
+    """
+    def func(self, x):
+        """
+        Computes the value of function at point x.
+        """
+        raise NotImplementedError('Func is not implemented.')
+
+    def subgrad(self, x):
+        """
+        Computes arbitrary subgradient vector at point x.
+        """
+        raise NotImplementedError('Subgrad is not implemented.')
+
+    def duality_gap(self, x):
+        """
+        Estimates the residual phi(x) - phi* via the dual problem, if any.
+        """
+        return None
+
+
+class BaseCompositeOracle(BaseNonsmoothConvexOracle):
     """
     Base class for the composite function.
     phi(x) := f(x) + h(x), where f is a smooth part, h is a simple part.
@@ -68,35 +94,6 @@ class BaseCompositeOracle(object):
         """
         return self._h.prox(x, alpha)
 
-    def duality_gap(self, x):
-        """
-        Estimates the residual phi(x) - phi* via the dual problem, if any.
-        """
-        return None
-
-
-class BaseNonsmoothConvexOracle(object):
-    """
-    Base class for implementation of oracle for nonsmooth convex function.
-    """
-    def func(self, x):
-        """
-        Computes the value of function at point x.
-        """
-        raise NotImplementedError('Func is not implemented.')
-
-    def subgrad(self, x):
-        """
-        Computes arbitrary subgradient vector at point x.
-        """
-        raise NotImplementedError('Subgrad is not implemented.')
-
-    def duality_gap(self, x):
-        """
-        Estimates the residual phi(x) - phi* via the dual problem, if any.
-        """
-        return None
-
 
 class LeastSquaresOracle(BaseSmoothOracle):
     """
@@ -114,7 +111,7 @@ class LeastSquaresOracle(BaseSmoothOracle):
         return 0.5 * np.dot(Ax_b, Ax_b)
 
     def grad(self, x):
-        return self.matvec_ATx(self.matvec_Ax(x)) - self.matvec_ATx(self.b)
+        return self.matvec_ATx(self.matvec_Ax(x) - self.b)
 
 
 class L1RegOracle(BaseProxOracle):
@@ -128,6 +125,9 @@ class L1RegOracle(BaseProxOracle):
 
     def func(self, x):
         return self.regcoef * scipy.linalg.norm(x, ord=1)
+
+    def subgrad(self, x):
+        return self.regcoef * np.sign(x)
 
     def prox(self, x, alpha):
         alpha_regcoef = alpha * self.regcoef
@@ -144,7 +144,29 @@ class L1RegOracle(BaseProxOracle):
         return prox(x)
 
 
-class LassoProxOracle(BaseCompositeOracle):
+class LassoNonsmoothOracle(BaseNonsmoothConvexOracle):
+    """
+    Oracle for nonsmooth convex function
+        0.5 * ||Ax - b||_2^2 + regcoef * ||x||_1.
+    """
+
+    def __init__(self, matvec_Ax, matvec_ATx, b, regcoef):
+        self._f = LeastSquaresOracle(matvec_Ax, matvec_ATx, b)
+        self._h = L1RegOracle(regcoef)
+
+    def func(self, x):
+        return self._f.func(x) + self._h.func(x)
+
+    def subgrad(self, x):
+        return self._f.grad(x) + self._h.subgrad(x)
+
+    def duality_gap(self, x):
+        Ax_b = self._f.matvec_Ax(x) - self._f.b
+        ATAx_b = self._f.matvec_ATx(Ax_b)
+        return lasso_duality_gap(x, Ax_b, ATAx_b, self._f.b, self._h.regcoef)
+
+
+class LassoProxOracle(BaseCompositeOracle, LassoNonsmoothOracle):
     """
     Oracle for 0.5 * ||Ax - b||_2^2 + regcoef * ||x||_1.
         f(x) = 0.5 * ||Ax - b||_2^2 is a smooth part,
@@ -153,27 +175,6 @@ class LassoProxOracle(BaseCompositeOracle):
 
     def __init__(self, f, h):
         super(LassoProxOracle, self).__init__(f, h)
-
-    def duality_gap(self, x):
-        Ax_b = self._f.matvec_Ax(x) - self._f.b
-        ATAx_b = self._f.matvec_ATx(Ax_b)
-        return lasso_duality_gap(x, Ax_b, ATAx_b, self._f.b, self._h.regcoef)
-
-
-class LassoNonsmoothOracle(LassoProxOracle, BaseNonsmoothConvexOracle):
-    """
-    Oracle for nonsmooth convex function
-        0.5 * ||Ax - b||_2^2 + regcoef * ||x||_1.
-    """
-
-    def __init__(self, matvec_Ax, matvec_ATx, b, regcoef):
-        super(LassoNonsmoothOracle, self).__init__(
-            LeastSquaresOracle(matvec_Ax, matvec_ATx, b),
-            L1RegOracle(regcoef)
-        )
-
-    def subgrad(self, x):
-        return self._f.grad(x) + self._h.regcoef * np.sign(x)
 
 
 def lasso_duality_gap(x, Ax_b, ATAx_b, b, regcoef):

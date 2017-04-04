@@ -155,6 +155,7 @@ def subgradient_method(oracle, x_0, tolerance=1e-2, max_iter=1000, alpha_0=1,
 
         if display: print('step', history['time'][-1] if history else '')
 
+        assert duality_gap is not None
         if duality_gap <= tolerance:
             converge = True
             break
@@ -219,6 +220,7 @@ def proximal_gradient_descent(oracle, x_0, L_0=1, tolerance=1e-5,
     timer = Timer()
     converge = False
     L_k = L_0
+    last_nesterov_num_iterations = 0
 
     for num_iter in range(max_iter + 1):
         duality_gap = oracle.duality_gap(x_k)
@@ -227,12 +229,15 @@ def proximal_gradient_descent(oracle, x_0, L_0=1, tolerance=1e-5,
             history['time'].append(timer.seconds())
             history['func'].append(np.copy(f_k))
             history['duality_gap'].append(np.copy(duality_gap))
+            history['nesterov_num_iterations'].append(last_nesterov_num_iterations)
             if x_k.size <= 2:
                 history['x'].append(np.copy(x_k))
 
         if display: print('step', history['time'][-1] if history else '')
 
+        assert duality_gap is not None
         if duality_gap <= tolerance:
+            print(duality_gap)
             converge = True
             break
 
@@ -242,7 +247,10 @@ def proximal_gradient_descent(oracle, x_0, L_0=1, tolerance=1e-5,
         grad_k = oracle.grad(x_k)
 
         nesterov_converge = False
+        last_nesterov_num_iterations = 0
         while not nesterov_converge:
+            last_nesterov_num_iterations += 1
+
             def m(y, L):
                 return _f_k + np.dot(grad_k, y - x_k) + L / 2.0 * np.dot(y - x_k, y - x_k) + oracle._h.func(y)
 
@@ -257,6 +265,5 @@ def proximal_gradient_descent(oracle, x_0, L_0=1, tolerance=1e-5,
 
         x_k, f_k = y, f_y
         L_k = max(L_0, L_k / 2.0)
-        break
 
     return x_k, 'success' if converge else 'iterations_exceeded', history
