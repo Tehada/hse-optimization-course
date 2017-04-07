@@ -2,6 +2,7 @@ from collections import defaultdict
 import numpy as np
 from numpy.linalg import norm, solve
 from datetime import datetime
+from numpy.linalg import LinAlgError
 
 import scipy
 import scipy.sparse
@@ -18,6 +19,67 @@ class Timer:
         now = datetime.now()
         timedelta = now - self.start
         return timedelta.seconds + timedelta.microseconds * 1e-6
+
+
+def newton(oracle, x_0, s, q, tolerance=1e-5, max_iter=100, theta=0.99,
+           line_search_options=None, trace=False, display=False):
+    history = defaultdict(list) if trace else None
+    line_search_tool = task1.optimization.get_line_search_tool(line_search_options)
+    x_k = np.copy(x_0).astype(np.float64)
+
+    timer = Timer()
+    converge = False
+
+    for num_iter in range(max_iter + 1):
+        if np.isinf(x_k).any() or np.isnan(x_k).any():
+            return x_k, 'computational_error', history
+
+        f_k = oracle.func(x_k)
+        grad_k = oracle.grad(x_k)
+
+        if np.isinf(grad_k).any() or np.isnan(grad_k).any():
+            return x_k, 'computational_error', history
+
+        grad_norm_k = scipy.linalg.norm(grad_k)
+
+        if trace:
+            history['time'].append(timer.seconds())
+            history['func'].append(np.copy(f_k))
+            history['grad_norm'].append(np.copy(grad_norm_k))
+            if x_k.size <= 2:
+                history['x'].append(np.copy(x_k))
+
+        if display: print('step', history['time'][-1] if history else '')
+
+        if num_iter == 0:
+            eps_grad_norm_0 = np.sqrt(tolerance) * grad_norm_k
+        if grad_norm_k <= eps_grad_norm_0:
+            converge = True
+            break
+
+        if num_iter == max_iter: break
+
+        hess_k = oracle.hess(x_k)
+        if isinstance(hess_k, scipy.sparse.spmatrix):
+            hess_k = hess_k.toarray()
+
+        try:
+            c, lower = scipy.linalg.cho_factor(hess_k)
+        except LinAlgError:
+            return x_k, 'newton_direction_error', history
+
+        d_k = scipy.linalg.cho_solve((c, lower), -grad_k)
+
+        q_d_k = q.dot(d_k)
+        check = (s - q.dot(x_k)) / q_d_k
+        check = check[q_d_k > 0.]
+
+        alpha_0 = min(1.0, theta * np.min(check)) if check.size else 1.0
+        alpha_k = line_search_tool.line_search(oracle, x_k, d_k, alpha_0)
+
+        x_k += alpha_k * d_k
+
+    return x_k, 'success' if converge else 'iterations_exceeded', history
 
 
 def barrier_method_lasso(A, b, reg_coef, x_0, u_0, tolerance=1e-5,
@@ -96,23 +158,70 @@ def barrier_method_lasso(A, b, reg_coef, x_0, u_0, tolerance=1e-5,
     u_k = np.copy(u_0).astype(np.float64)
     t_k = t_0
 
+    matvec_Ax = lambda x: A.dot(x)
+    matvec_ATx = lambda x: A.T.dot(x)
+
     timer = Timer()
     converge = False
     n = x_k.size
 
-    line_search_tool = task1.optimization.LineSearchTool(method='Armijo', c1=c1)
-    ATA = None
+    class SubtaskOracle(task1.oracles.BaseSmoothOracle):
+            def __init__(self, t):
+                self.t = t
+
+            def func(self, x):
+                Ax_b = matvec_Ax(x[:n]) - b
+                regression = 0.5 * np.dot(Ax_b, Ax_b)
+                regularization = reg_coef * scipy.linalg.norm(x[n:], ord=1)
+
+                @np.vectorize
+                def fixed_log(x):
+                    return np.log(x) if x > 0 else np.inf
+
+                return self.t * (regression + regularization) - np.sum(fixed_log(x[n:] + x[:n]) + fixed_log(x[n:] - x[:n]))
+
+            def grad(self, x):
+                regression = matvec_ATx(matvec_Ax(x[:n]) - b)
+                regularization = np.full(n, reg_coef)
+
+                left = 1.0 / (self.t * x[n:] + self.t * x[:n])
+                right = 1.0 / (self.t * x[n:] - self.t * x[:n])
+
+                return self.t * np.concatenate((regression - left + right, regularization - left - right))
+
+            def hess(self, x):
+                left = 1.0 / (x[n:] + x[:n])**2
+                right = 1.0 / (x[n:] - x[:n])**2
+
+                return np.bmat([
+                    [self.t * ATA + np.diag(left + right), np.diag(left - right)],
+                    [np.diag(left - right), np.diag(left + right)]
+                ])
+
+    ATA = A.T.dot(A)
+
+    q = np.bmat([
+        [np.eye(n), -1 * np.eye(n)],
+        [-1 * np.eye(n), -1 * np.eye(n)],
+    ])
+
+    def eval_duality_gap(x):
+        if lasso_duality_gap is None:
+            return None
+        Ax_b = matvec_Ax(x) - b
+        ATAx_b = matvec_ATx(Ax_b)
+        return lasso_duality_gap(x, Ax_b, ATAx_b, b, reg_coef)
 
     for num_iter in range(max_iter + 1):
-        duality_gap = oracle.duality_gap(x_k) if lasso_duality_gap is not None else None
+        duality_gap = eval_duality_gap(x_k)
 
         if duality_gap is None:
             converge = True
 
         if trace:
             history['time'].append(timer.seconds())
-            history['func'].append(np.copy(f_k))
-            history['duality_gap'].append(np.copy(duality_gap))
+            history['func'].append(0.5 * matvec_Ax(x_k) - b + reg_coef * scipy.linalg.norm(x_k, ord=1))
+            history['duality_gap'].append(duality_gap)
             if x_k.size <= 2:
                 history['x'].append(np.copy(x_k))
 
@@ -124,59 +233,22 @@ def barrier_method_lasso(A, b, reg_coef, x_0, u_0, tolerance=1e-5,
 
         if num_iter == max_iter: break
 
-        if ATA is None:
-            ATA = A.T.dot(A)
-
-        class SubtaskOracle(task1.oracles.BaseSmoothOracle):
-            def __init__(self, t):
-                self.matvec_Ax = lambda x: A.dot(x)
-                self.matvec_ATx = lambda x: A.T.dot(x)
-                self.t = t
-
-            def func(self, x):
-                Ax_b = self.matvec_Ax(x[:n]) - b
-                regression = 0.5 * np.dot(Ax_b, Ax_b)
-                regularization = reg_coef * np.sum(x[n:])
-
-                @np.vectorize
-                def fixed_log(x):
-                    return np.log(x) if x > 0 else np.inf
-
-                return self.t * (regression + regularization) - np.sum(fixed_log(x[n:] + x[:n]) + fixed_log(x[n:] - x[:n]))
-
-            def grad(self, x):
-                regression = self.t * self.matvec_ATx(self.matvec_Ax(x[:n]) - b)
-                regularization = np.full(n, self.t * reg_coef)
-                left = 1.0 / (x[n:] + x[:n])
-                right = 1.0 / (x[n:] - x[:n])
-
-                return np.concatenate((regression - left + right, regularization - left - right))
-
-            def hess(self, x):
-                left = 1.0 / (x[n:] + x[:n])**2
-                right = 1.0 / (x[n:] - x[:n])**2
-
-                return np.bmat([
-                    [self.t * ATA + np.diag(left + right), np.diag(left - right)],
-                    [np.diag(left - right), np.diag(left + right)]
-                ])
-
-        newton_solution, newton_message, _ = task1.optimization.newton(
+        newton_solution, newton_message, _ = newton(
             SubtaskOracle(t_k),
             np.concatenate((x_k, u_k)),
+            np.zeros(2 * n), q, theta=0.99,
             tolerance=tolerance_inner,
             max_iter=max_iter_inner,
-            line_search_options=line_search_tool
+            line_search_options={'method': 'Armijo', 'c1': c1}
         )
 
-        #assert(newton_message is not 'newton_direction_error')
+        # assert newton_message is not 'newton_direction_error'
 
         x_k, u_k = newton_solution[:n], newton_solution[n:]
+
         t_k *= gamma
 
-        print(x_k)
-
-    return x_k, 'success' if converge else 'iterations_exceeded', history
+    return (x_k, u_k), 'success' if converge else 'iterations_exceeded', history
 
 
 def subgradient_method(oracle, x_0, tolerance=1e-2, max_iter=1000, alpha_0=1,
@@ -322,7 +394,6 @@ def proximal_gradient_descent(oracle, x_0, L_0=1, tolerance=1e-5,
         if duality_gap is None:
             converge = True
 
-
         if trace:
             history['time'].append(timer.seconds())
             history['func'].append(f_k)
@@ -347,14 +418,17 @@ def proximal_gradient_descent(oracle, x_0, L_0=1, tolerance=1e-5,
         while not nesterov_converge:
             last_nesterov_num_iterations += 1
 
-            def m(y, L):
-                return _f_k + np.dot(grad_k, y - x_k) + L / 2.0 * np.dot(y - x_k, y - x_k) + oracle._h.func(y)
+            def m(y, L, _h_y):
+                if _h_y is None: _h_y = oracle._h.func(y)
+                return _f_k + np.dot(grad_k, y - x_k) + L / 2.0 * np.dot(y - x_k, y - x_k) + _h_y
 
             alpha = 1.0 / L_k
             y = oracle.prox(x_k - alpha * grad_k, alpha)
-            f_y = oracle.func(y)
+            _f_y = oracle._f.func(y)
+            _h_y = oracle._h.func(y)
+            f_y = _f_y + _h_y
 
-            if f_y <= m(y, L_k):
+            if f_y <= m(y, L_k, _h_y):
                 nesterov_converge = True
             else:
                 L_k *= 2.0
