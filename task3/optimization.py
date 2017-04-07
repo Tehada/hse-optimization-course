@@ -3,6 +3,12 @@ import numpy as np
 from numpy.linalg import norm, solve
 from datetime import datetime
 
+import scipy
+import scipy.sparse
+
+import task1.optimization
+import task1.oracles
+
 
 class Timer:
     def __init__(self):
@@ -58,7 +64,7 @@ def barrier_method_lasso(A, b, reg_coef, x_0, u_0, tolerance=1e-5,
     c1 : float
         Armijo's constant for line search in Newton's method.
     lasso_duality_gap : callable object or None.
-        If calable the signature is lasso_duality_gap(ATAx_b, Ax_b, b, regcoef)
+        If calable the signature is lasso_duality_gap(x, Ax_b, ATAx_b, b, regcoef)
         Returns duality gap value for esimating the progress of method.
     trace : bool
         If True, the progress information is appended into history dictionary
@@ -85,7 +91,92 @@ def barrier_method_lasso(A, b, reg_coef, x_0, u_0, tolerance=1e-5,
             - history['x'] : list of np.arrays, containing the trajectory of the algorithm. ONLY STORE IF x.size <= 2
     """
 
-    pass
+    history = defaultdict(list) if trace else None
+    x_k = np.copy(x_0).astype(np.float64)
+    u_k = np.copy(u_0).astype(np.float64)
+    t_k = t_0
+
+    timer = Timer()
+    converge = False
+    n = x_k.size
+
+    line_search_tool = task1.optimization.LineSearchTool(method='Armijo', c1=c1)
+    ATA = None
+
+    for num_iter in range(max_iter + 1):
+        duality_gap = oracle.duality_gap(x_k) if lasso_duality_gap is not None else None
+
+        if duality_gap is None:
+            converge = True
+
+        if trace:
+            history['time'].append(timer.seconds())
+            history['func'].append(np.copy(f_k))
+            history['duality_gap'].append(np.copy(duality_gap))
+            if x_k.size <= 2:
+                history['x'].append(np.copy(x_k))
+
+        if display: print('step', history['time'][-1] if history else '')
+
+        if duality_gap is not None and duality_gap <= tolerance:
+            converge = True
+            break
+
+        if num_iter == max_iter: break
+
+        if ATA is None:
+            ATA = A.T.dot(A)
+
+        class SubtaskOracle(task1.oracles.BaseSmoothOracle):
+            def __init__(self, t):
+                self.matvec_Ax = lambda x: A.dot(x)
+                self.matvec_ATx = lambda x: A.T.dot(x)
+                self.t = t
+
+            def func(self, x):
+                Ax_b = self.matvec_Ax(x[:n]) - b
+                regression = 0.5 * np.dot(Ax_b, Ax_b)
+                regularization = reg_coef * np.sum(x[n:])
+
+                @np.vectorize
+                def fixed_log(x):
+                    return np.log(x) if x > 0 else np.inf
+
+                return self.t * (regression + regularization) - np.sum(fixed_log(x[n:] + x[:n]) + fixed_log(x[n:] - x[:n]))
+
+            def grad(self, x):
+                regression = self.t * self.matvec_ATx(self.matvec_Ax(x[:n]) - b)
+                regularization = np.full(n, self.t * reg_coef)
+                left = 1.0 / (x[n:] + x[:n])
+                right = 1.0 / (x[n:] - x[:n])
+
+                return np.concatenate((regression - left + right, regularization - left - right))
+
+            def hess(self, x):
+                left = 1.0 / (x[n:] + x[:n])**2
+                right = 1.0 / (x[n:] - x[:n])**2
+
+                return np.bmat([
+                    [self.t * ATA + np.diag(left + right), np.diag(left - right)],
+                    [np.diag(left - right), np.diag(left + right)]
+                ])
+
+        newton_solution, newton_message, _ = task1.optimization.newton(
+            SubtaskOracle(t_k),
+            np.concatenate((x_k, u_k)),
+            tolerance=tolerance_inner,
+            max_iter=max_iter_inner,
+            line_search_options=line_search_tool
+        )
+
+        #assert(newton_message is not 'newton_direction_error')
+
+        x_k, u_k = newton_solution[:n], newton_solution[n:]
+        t_k *= gamma
+
+        print(x_k)
+
+    return x_k, 'success' if converge else 'iterations_exceeded', history
 
 
 def subgradient_method(oracle, x_0, tolerance=1e-2, max_iter=1000, alpha_0=1,
@@ -141,22 +232,25 @@ def subgradient_method(oracle, x_0, tolerance=1e-2, max_iter=1000, alpha_0=1,
 
     for num_iter in range(max_iter + 1):
         f_k = oracle.func(x_k)
-        duality_gap = oracle.duality_gap(x_k)
+
+        duality_gap = oracle.duality_gap(x_k) if hasattr(oracle, 'duality_gap') else None
+
+        if duality_gap is None:
+            converge = True
 
         if f_best is None or f_best > f_k:
-            x_best, f_best = x_k, f_k
+            x_best, f_best = np.copy(x_k), f_k
 
         if trace:
             history['time'].append(timer.seconds())
-            history['func'].append(np.copy(f_k))
-            history['duality_gap'].append(np.copy(duality_gap))
+            history['func'].append(f_k)
+            history['duality_gap'].append(duality_gap)
             if x_k.size <= 2:
                 history['x'].append(np.copy(x_k))
 
         if display: print('step', history['time'][-1] if history else '')
 
-        assert duality_gap is not None
-        if duality_gap <= tolerance:
+        if duality_gap is not None and duality_gap <= tolerance:
             converge = True
             break
 
@@ -223,21 +317,23 @@ def proximal_gradient_descent(oracle, x_0, L_0=1, tolerance=1e-5,
     last_nesterov_num_iterations = 0
 
     for num_iter in range(max_iter + 1):
-        duality_gap = oracle.duality_gap(x_k)
+        duality_gap = oracle.duality_gap(x_k) if hasattr(oracle, 'duality_gap') else None
+
+        if duality_gap is None:
+            converge = True
+
 
         if trace:
             history['time'].append(timer.seconds())
-            history['func'].append(np.copy(f_k))
-            history['duality_gap'].append(np.copy(duality_gap))
+            history['func'].append(f_k)
+            history['duality_gap'].append(duality_gap)
             history['nesterov_num_iterations'].append(last_nesterov_num_iterations)
             if x_k.size <= 2:
                 history['x'].append(np.copy(x_k))
 
         if display: print('step', history['time'][-1] if history else '')
 
-        assert duality_gap is not None
-        if duality_gap <= tolerance:
-            print(duality_gap)
+        if duality_gap is not None and duality_gap <= tolerance:
             converge = True
             break
 
