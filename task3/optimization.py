@@ -34,7 +34,7 @@ def barrier_method_lasso(A, b, reg_coef, x_0, u_0, tolerance=1e-5,
         phi_t(x, u) := t * f(x, u) - sum_i( log(u_i + x_i) + log(u_i - x_i) )
     and minimize it as unconstrained problem by Newton's method.
 
-    In the outer loop `t` is decreased and we have a sequence of approximations
+    In the outer loop `t` is increased and we have a sequence of approximations
         { phi_t(x, u) } and solutions { (x_t, u_t)^{*} } which converges in `t`
     to the solution of the original problem.
 
@@ -189,7 +189,7 @@ def subgradient_method(oracle, x_0, tolerance=1e-2, max_iter=1000, alpha_0=1,
     oracle : BaseNonsmoothConvexOracle-descendant object
         Oracle with .func() and .subgrad() methods implemented for computing
         function value and its one (arbitrary) subgradient respectively.
-        If avaliable, .duality_gap() method is used for estimating f_k - f*.
+        If available, .duality_gap() method is used for estimating f_k - f*.
     x_0 : 1-dimensional np.array
         Starting point of the algorithm
     tolerance : float
@@ -274,7 +274,7 @@ def proximal_gradient_descent(oracle, x_0, L_0=1, tolerance=1e-5,
         Oracle with .func() and .grad() and .prox() methods implemented
         for computing function value, its gradient and proximal mapping
         respectively.
-        If avaliable, .duality_gap() method is used for estimating f_k - f*.
+        If available, .duality_gap() method is used for estimating f_k - f*.
     x_0 : 1-dimensional np.array
         Starting point of the algorithm
     L_0 : float

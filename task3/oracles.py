@@ -180,7 +180,7 @@ class LassoProxOracle(BaseCompositeOracle, LassoNonsmoothOracle):
 def lasso_duality_gap(x, Ax_b, ATAx_b, b, regcoef):
     """
     Estimates f(x) - f* via duality gap for
-        f(x) := ||Ax - b||_2^2 + regcoef * ||x||_1.
+        f(x) := 0.5 * ||Ax - b||_2^2 + regcoef * ||x||_1.
     """
 
     mu = min(1., regcoef / scipy.linalg.norm(ATAx_b, np.inf)) * Ax_b
