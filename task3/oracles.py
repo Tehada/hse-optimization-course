@@ -183,7 +183,9 @@ def lasso_duality_gap(x, Ax_b, ATAx_b, b, regcoef):
         f(x) := 0.5 * ||Ax - b||_2^2 + regcoef * ||x||_1.
     """
 
-    mu = min(1., regcoef / scipy.linalg.norm(ATAx_b, np.inf)) * Ax_b
+    norm = scipy.linalg.norm(ATAx_b, np.inf)
+    coef = min(1.0, regcoef / scipy.linalg.norm(ATAx_b, np.inf)) if norm else 1.0
+    mu = coef * Ax_b
     return 0.5 * np.dot(Ax_b, Ax_b) + regcoef * scipy.linalg.norm(x, ord=1) + 0.5 * np.dot(mu, mu) + np.dot(b, mu)
 
 

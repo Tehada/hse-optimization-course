@@ -31,13 +31,13 @@ def newton(oracle, x_0, s, q, tolerance=1e-5, max_iter=100, theta=0.99,
     converge = False
 
     for num_iter in range(max_iter + 1):
-        if np.isinf(x_k).any() or np.isnan(x_k).any():
+        if x_k.dtype != float or np.isinf(x_k).any() or np.isnan(x_k).any():
             return x_k, 'computational_error', history
 
         f_k = oracle.func(x_k)
         grad_k = oracle.grad(x_k)
 
-        if np.isinf(grad_k).any() or np.isnan(grad_k).any():
+        if grad_k.dtype != float or np.isinf(grad_k).any() or np.isnan(grad_k).any():
             return x_k, 'computational_error', history
 
         grad_norm_k = scipy.linalg.norm(grad_k)
