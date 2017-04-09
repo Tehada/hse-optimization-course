@@ -231,7 +231,7 @@ def barrier_method_lasso(A, b, reg_coef, x_0, u_0, tolerance=1e-5,
             break
 
         if t_k > np.finfo(np.float64).max:
-            return (x_k, u_k), 't_k overflow', history
+            return (x_k, u_k), 'computational_error', history
 
         if num_iter == max_iter: break
 
