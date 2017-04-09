@@ -1,11 +1,9 @@
 from collections import defaultdict
-import numpy as np
-from numpy.linalg import norm, solve
 from datetime import datetime
+import numpy as np
 from numpy.linalg import LinAlgError
+import scipy.linalg
 
-import scipy
-import scipy.sparse
 
 import task1.optimization
 import task1.oracles
@@ -21,35 +19,32 @@ class Timer:
         return timedelta.seconds + timedelta.microseconds * 1e-6
 
 
-def newton(oracle, x_0, s, q, tolerance=1e-5, max_iter=100, theta=0.99,
-           line_search_options=None, trace=False, display=False):
-    history = defaultdict(list) if trace else None
+def newton_barrier_lasso(oracle, tATA, x_0, u_0, tolerance=1e-5, max_iter=100, theta=0.99, line_search_options=None):
     line_search_tool = task1.optimization.get_line_search_tool(line_search_options)
     x_k = np.copy(x_0).astype(np.float64)
+    u_k = np.copy(u_0).astype(np.float64)
+    n = x_k.size
 
-    timer = Timer()
     converge = False
 
     for num_iter in range(max_iter + 1):
-        if x_k.dtype != float or np.isinf(x_k).any() or np.isnan(x_k).any():
-            return x_k, 'computational_error', history
+        x = np.concatenate((x_k, u_k))
 
-        f_k = oracle.func(x_k)
-        grad_k = oracle.grad(x_k)
+        if x.dtype != float or np.isinf(x).any() or np.isnan(x).any():
+            return (x_k, u_k), 'computational_error'
+
+        try:
+            grad_k = oracle.grad(x)
+        except Exception:
+            return (x_k, u_k), 'computational_error'
+
+        grad_x = grad_k[:n]
+        grad_u = grad_k[n:]
 
         if grad_k.dtype != float or np.isinf(grad_k).any() or np.isnan(grad_k).any():
-            return x_k, 'computational_error', history
+            return (x_k, u_k), 'computational_error'
 
         grad_norm_k = scipy.linalg.norm(grad_k)
-
-        if trace:
-            history['time'].append(timer.seconds())
-            history['func'].append(np.copy(f_k))
-            history['grad_norm'].append(np.copy(grad_norm_k))
-            if x_k.size <= 2:
-                history['x'].append(np.copy(x_k))
-
-        if display: print('step', history['time'][-1] if history else '')
 
         if num_iter == 0:
             eps_grad_norm_0 = np.sqrt(tolerance) * grad_norm_k
@@ -59,27 +54,40 @@ def newton(oracle, x_0, s, q, tolerance=1e-5, max_iter=100, theta=0.99,
 
         if num_iter == max_iter: break
 
-        hess_k = oracle.hess(x_k)
-        if isinstance(hess_k, scipy.sparse.spmatrix):
-            hess_k = hess_k.toarray()
+        alpha = 1.0 / (u_k + x_k)**2
+        beta = 1.0 / (u_k - x_k)**2
+
+        A = tATA + np.diag(((alpha + beta)**2 - (alpha - beta)**2) / (alpha + beta))
+        b = grad_u * (alpha - beta) / (alpha + beta) - grad_x
 
         try:
-            c, lower = scipy.linalg.cho_factor(hess_k)
+            c, lower = scipy.linalg.cho_factor(A, overwrite_a=True)
         except LinAlgError:
-            return x_k, 'newton_direction_error', history
+            return (x_k, u_k), 'newton_direction_error'
 
-        d_k = scipy.linalg.cho_solve((c, lower), -grad_k)
+        d_x = scipy.linalg.cho_solve((c, lower), b, overwrite_b=True)
+        d_u = -(grad_u + d_x * (alpha - beta)) / (alpha + beta)
 
-        q_d_k = q.dot(d_k)
-        check = (s - q.dot(x_k)) / q_d_k
-        check = check[q_d_k > 0.]
+        d_1 = d_x - d_u
+        idxs_1 = d_1 > 0.0
+        d_2 = -d_x - d_u
+        idxs_2 = d_2 > 0.0
 
-        alpha_0 = min(1.0, theta * np.min(check)) if check.size else 1.0
-        alpha_k = line_search_tool.line_search(oracle, x_k, d_k, alpha_0)
+        alpha_0 = np.concatenate([
+            [1.0],
+            theta * (u_k - x_k)[idxs_1] / d_1[idxs_1],
+            theta * (u_k + x_k)[idxs_2] / d_2[idxs_2]
+        ]).min()
 
-        x_k += alpha_k * d_k
+        try:
+            alpha_k = line_search_tool.line_search(oracle, x, np.concatenate((d_x, d_u)), alpha_0)
+        except Exception:
+            return (x_k, u_k), 'computational_error'
 
-    return x_k, 'success' if converge else 'iterations_exceeded', history
+        x_k = x_k + alpha_k * d_x
+        u_k = u_k + alpha_k * d_u
+
+    return (x_k, u_k), 'success' if converge else 'iterations_exceeded'
 
 
 def barrier_method_lasso(A, b, reg_coef, x_0, u_0, tolerance=1e-5,
@@ -156,54 +164,41 @@ def barrier_method_lasso(A, b, reg_coef, x_0, u_0, tolerance=1e-5,
     history = defaultdict(list) if trace else None
     x_k = np.copy(x_0).astype(np.float64)
     u_k = np.copy(u_0).astype(np.float64)
-    t_k = t_0
+    t_k = np.float64(t_0)
 
+    AT = A.T
+    ATA = AT.dot(A)
     matvec_Ax = lambda x: A.dot(x)
-    matvec_ATx = lambda x: A.T.dot(x)
+    matvec_ATx = lambda x: AT.dot(x)
 
     timer = Timer()
     converge = False
     n = x_k.size
 
     class SubtaskOracle(task1.oracles.BaseSmoothOracle):
-            def __init__(self, t):
-                self.t = t
+        def __init__(self, t):
+            self.t = t
 
-            def func(self, x):
-                Ax_b = matvec_Ax(x[:n]) - b
-                regression = 0.5 * np.dot(Ax_b, Ax_b)
-                regularization = reg_coef * scipy.linalg.norm(x[n:], ord=1)
+        def func(self, x):
+            Ax_b = matvec_Ax(x[:n]) - b
+            regression = 0.5 * np.dot(Ax_b, Ax_b)
+            regularization = reg_coef * scipy.linalg.norm(x[n:], ord=1)
 
-                @np.vectorize
-                def fixed_log(x):
-                    return np.log(x) if x > 0 else np.inf
+            @np.vectorize
+            def fixed_log(x):
+                return np.log(x) if x > 0 else np.inf
 
-                return self.t * (regression + regularization) - np.sum(fixed_log(x[n:] + x[:n]) + fixed_log(x[n:] - x[:n]))
+            return self.t * (regression + regularization) - np.sum(fixed_log(x[n:] + x[:n]) + fixed_log(x[n:] - x[:n]))
 
-            def grad(self, x):
-                regression = matvec_ATx(matvec_Ax(x[:n]) - b)
-                regularization = np.full(n, reg_coef)
+        def grad(self, x):
+            regression = matvec_ATx(matvec_Ax(x[:n]) - b)
+            regularization = np.full(n, reg_coef)
 
-                left = 1.0 / (self.t * x[n:] + self.t * x[:n])
-                right = 1.0 / (self.t * x[n:] - self.t * x[:n])
+            left = 1.0 / (self.t * x[n:] + self.t * x[:n])
+            right = 1.0 / (self.t * x[n:] - self.t * x[:n])
 
-                return self.t * np.concatenate((regression - left + right, regularization - left - right))
+            return self.t * np.concatenate((regression - left + right, regularization - left - right))
 
-            def hess(self, x):
-                left = 1.0 / (x[n:] + x[:n])**2
-                right = 1.0 / (x[n:] - x[:n])**2
-
-                return np.bmat([
-                    [self.t * ATA + np.diag(left + right), np.diag(left - right)],
-                    [np.diag(left - right), np.diag(left + right)]
-                ])
-
-    ATA = A.T.dot(A)
-
-    q = np.bmat([
-        [np.eye(n), -1 * np.eye(n)],
-        [-1 * np.eye(n), -1 * np.eye(n)],
-    ])
 
     def eval_duality_gap(x):
         if lasso_duality_gap is None:
@@ -211,6 +206,7 @@ def barrier_method_lasso(A, b, reg_coef, x_0, u_0, tolerance=1e-5,
         Ax_b = matvec_Ax(x) - b
         ATAx_b = matvec_ATx(Ax_b)
         return lasso_duality_gap(x, Ax_b, ATAx_b, b, reg_coef)
+
 
     for num_iter in range(max_iter + 1):
         duality_gap = eval_duality_gap(x_k)
@@ -231,20 +227,17 @@ def barrier_method_lasso(A, b, reg_coef, x_0, u_0, tolerance=1e-5,
             converge = True
             break
 
+        if t_k > np.finfo(np.float64).max:
+            return (x_k, u_k), 't_k overflow', history
+
         if num_iter == max_iter: break
 
-        newton_solution, newton_message, _ = newton(
-            SubtaskOracle(t_k),
-            np.concatenate((x_k, u_k)),
-            np.zeros(2 * n), q, theta=0.99,
+        (x_k, u_k), newton_message = newton_barrier_lasso(
+            SubtaskOracle(t_k), t_k * ATA, x_k, u_k,
+            theta=0.99, line_search_options={'method': 'Armijo', 'c1': c1},
             tolerance=tolerance_inner,
             max_iter=max_iter_inner,
-            line_search_options={'method': 'Armijo', 'c1': c1}
         )
-
-        # assert newton_message is not 'newton_direction_error'
-
-        x_k, u_k = newton_solution[:n], newton_solution[n:]
 
         t_k *= gamma
 
