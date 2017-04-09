@@ -1,8 +1,8 @@
 from collections import defaultdict
 from datetime import datetime
 import numpy as np
-from numpy.linalg import LinAlgError
 import scipy.linalg
+import scipy.sparse
 
 
 import task1.optimization
@@ -57,15 +57,18 @@ def newton_barrier_lasso(oracle, tATA, x_0, u_0, tolerance=1e-5, max_iter=100, t
         alpha = 1.0 / (u_k + x_k)**2
         beta = 1.0 / (u_k - x_k)**2
 
-        A = tATA + np.diag(((alpha + beta)**2 - (alpha - beta)**2) / (alpha + beta))
+        A = tATA + scipy.sparse.diags(((alpha + beta)**2 - (alpha - beta)**2) / (alpha + beta))
         b = grad_u * (alpha - beta) / (alpha + beta) - grad_x
 
         try:
-            c, lower = scipy.linalg.cho_factor(A, overwrite_a=True)
-        except LinAlgError:
+            if scipy.sparse.issparse(A):
+                d_x = scipy.sparse.linalg.spsolve(A, b)
+            else:
+                c, lower = scipy.linalg.cho_factor(A, overwrite_a=True)
+                d_x = scipy.linalg.cho_solve((c, lower), b, overwrite_b=True)
+        except Exception:
             return (x_k, u_k), 'newton_direction_error'
 
-        d_x = scipy.linalg.cho_solve((c, lower), b, overwrite_b=True)
         d_u = -(grad_u + d_x * (alpha - beta)) / (alpha + beta)
 
         d_1 = d_x - d_u
